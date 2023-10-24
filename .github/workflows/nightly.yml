@@ -7,12 +7,19 @@ jobs:
   build_nightly_editor:
     if: github.repository_owner == 'AuroraEditor'
     runs-on: macos-12
-    timeout-minutes: 30 # If a build exceeds 430 mins, it probably isn't ever going to complete
+    timeout-minutes: 30 # If a build exceeds 30 mins, it probably isn't ever going to complete
     steps:
+      - name: 'Cleanup build folder'
+        run: |
+          ls -la ./
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la ./
+        
       - uses: actions/checkout@v3
       
-      - name: "Select Xcode 14.0"
-        run: sudo xcode-select -s /Applications/Xcode_14.0.app
+      - name: "Select Xcode (Default)"
+        run: sudo xcode-select -s /Applications/Xcode.app
         
         ### Certs
       - name: "Import Certificate: Development"
@@ -21,33 +28,42 @@ jobs:
           P12_PASSWORD: ${{ secrets.DEVELOPMENT_CERTIFICATE_PASSPHRASE }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          # create variables
-          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          # import certificate and provisioning profile from secrets
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output $CERTIFICATE_PATH
-          # create temporary keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          # import certificate to keychain
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
-      
+          # Create variables
+          CERTIFICATE_PATH="$RUNNER_TEMP/build_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          # Import certificate and provisioning profile from secrets
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output "$CERTIFICATE_PATH"
+
+          # Create a temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate into the keychain
+          security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          # List keychains to verify the import
+          security list-keychains -s "$KEYCHAIN_PATH"
+
       - name: "Import Certificate: Distribution"
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.DISTRIBUTION_CERTIFICATE_DATA }}
           P12_PASSWORD: ${{ secrets.DISTRIBUTION_CERTIFICATE_PASSPHRASE }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          # create variables
-          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          # import certificate and provisioning profile from secrets
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output $CERTIFICATE_PATH
-          # import certificate to keychain
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
+          # Create variables
+          CERTIFICATE_PATH="$RUNNER_TEMP/build_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          # Import certificate and provisioning profile from secrets
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output "$CERTIFICATE_PATH"
+
+          # Import certificate into the keychain
+          security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          # List keychains to verify the import
+          security list-keychains -s "$KEYCHAIN_PATH"
 
       - name: "Import Certificate: Developer ID Application"
         env:
@@ -55,29 +71,102 @@ jobs:
           P12_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSPHRASE }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          # create variables
-          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          # import certificate and provisioning profile from secrets
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output $CERTIFICATE_PATH
-          # import certificate to keychain
-          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          security list-keychain -d user -s $KEYCHAIN_PATH
+          # Create variables
+          CERTIFICATE_PATH="$RUNNER_TEMP/build_certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          # Import certificate and provisioning profile from secrets
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode --output "$CERTIFICATE_PATH"
+
+          # Import certificate into the keychain
+          security import "$CERTIFICATE_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          # List keychains to verify the import
+          security list-keychains -s "$KEYCHAIN_PATH"
 
       - name: "Update version number"
-        run: agvtool new-version -all `date -u "+%Y%m%d.%H%M"`
+        id: version_info
+        run: |
+          # Calculate the new version number based on SemVer
+          current_version=$(agvtool what-version -terse)
+          IFS='.' read -r -a version_parts <<< "$current_version"
+
+          # Initialize default values for new_minor and new_patch
+          default_minor=0
+          default_patch=0
+
+          # Assign values from version_parts or use default values if they don't exist
+          new_major=${version_parts[0]}
+          new_minor=${version_parts[1]:-$default_minor}
+          new_patch=${version_parts[2]:-$default_patch}
+
+          echo "Current version: $new_major.$new_minor.$new_patch"
+
+          # Get the list of commit messages since the last version
+          commit_messages=$(git log --oneline --format="%s")
+
+          version_name="V$new_major.$new_minor.$new_patch"  # Initialize with default value
+
+          # Check commit messages for keywords
+          if echo "$commit_messages" | grep -q "breaking"; then
+            ((new_major++))
+            new_minor=0
+            new_patch=0
+            version_name="V$new_major"
+          elif echo "$commit_messages" | grep -q "feature"; then
+            ((new_minor++))
+            new_patch=0
+            version_name="V$new_major.$new_minor"
+          else
+            ((new_patch++))
+          fi
+
+          # Generate the new version number and version name
+          new_version="$new_major.$new_minor.$new_patch"
+          version_name="V$new_major.$new_minor.$new_patch"
+
+          if [[ $new_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            agvtool new-version -all "$new_version"
+            echo "New version: $new_version"
+            echo "Version name: $version_name"
+          else
+            agvtool new-version -all "$current_version"
+            echo "Invalid new version, falling back to the old version: $current_version"
+            echo "Version name: $version_name"
+          fi
+
+          echo "version_name=$version_name" >> $GITHUB_OUTPUT
 
       - name: "Create Release Build Archive"
         run: | 
-          set -o pipefail && xcodebuild -workspace "Aurora Editor.xcworkspace" -scheme "Aurora Editor (Release)" -configuration Release archive -archivePath "builds/Aurora Editor.xcarchive" DEVELOPMENT_TEAM=4V2D72S45C OTHER_CODE_SIGN_FLAGS="--options=runtime" | xcpretty 
-
-      - name: "Export Release Build"
+          set -o pipefail
+          xcodebuild -workspace "Aurora Editor.xcworkspace" \
+            -scheme "Aurora Editor (Release)" \
+            -configuration Release archive \
+            -archivePath "builds/Aurora Editor.xcarchive" \
+            DEVELOPMENT_TEAM=4V2D72S45C \
+            OTHER_CODE_SIGN_FLAGS="--options=runtime" 2>/dev/null
+               
+      - name: Export Release Build
         run: |
-          xcrun xcodebuild -exportArchive -exportOptionsPlist .github/export.plist -archivePath "builds/Aurora Editor.xcarchive" -exportPath builds
+          xcodebuild -exportArchive \
+          -exportOptionsPlist .github/export.plist \
+          -archivePath "builds/Aurora Editor.xcarchive" \
+          -exportPath "builds"
 
       - name: "Sign application"
         run: |
+          # Check that the certificate and identity exist and are installed.
+          security find-identity -v -p codesigning
+
+          # Verify the application path is correct.
+          codesign --verify --deep --display "builds/Aurora Editor.app"
+
+          # Perform the code signing.
           codesign --sign "Developer ID Application: Wesley de Groot (4V2D72S45C)" -vvv --verbose --strict --options=runtime --prefix com.auroraeditor. --force --deep --timestamp "builds/Aurora Editor.app"
+
+          # Verify the code signature.
+          codesign --verify --deep --display --verbose "builds/Aurora Editor.app"
 
       - name: Install create-dmg
         run: npm install --global create-dmg
@@ -85,14 +174,28 @@ jobs:
       - name: Make Release Dmg
         run: create-dmg "builds/Aurora Editor.app"
 
-      - name: "notarytool submit"
+      - name: Notarize and Log
         run: |
-          xcrun notarytool submit "Aurora Editor 1.0.dmg" --apple-id "${{ secrets.APPLEID_EMAIL }}" --password "${{ secrets.APPLEID_PASSWORD }}" --team-id "4V2D72S45C" --wait > notarytool.log
+          # Submit the file for notarization and store the output in a log file.
+          xcrun notarytool submit "Aurora Editor 1.0.dmg" \
+          --apple-id "${{ secrets.APPLEID_EMAIL }}" \
+          --password "${{ secrets.APPLEID_PASSWORD }}" \
+          --team-id "4V2D72S45C" \
+          --wait > notarytool.log
+
+          # Display the contents of the log file.
           cat notarytool.log
-          xcrun notarytool log "$(cat notarytool.log | grep -m1 id: | cut -d':' -f 2 | sed  s/\ //g)" --apple-id "${{ secrets.APPLEID_EMAIL }}" --password "${{ secrets.APPLEID_PASSWORD }}" --team-id "4V2D72S45C"
-        
-      # - name: "Staple Release Build"
-      # run: xcrun stapler staple "Aurora Editor 1.0.dmg"
+
+          # Extract the request ID from the log and check the notarization status.
+          request_id="$(grep -m1 'id:' notarytool.log | cut -d':' -f 2 | tr -d '[:space:]')"
+          xcrun notarytool log "$request_id" \
+          --apple-id "${{ secrets.APPLEID_EMAIL }}" \
+          --password "${{ secrets.APPLEID_PASSWORD }}" \
+          --team-id "4V2D72S45C"
+
+      # Stapler does not work, so it's disabled.
+      #- name: "Staple Release Build"
+      #  run: xcrun stapler staple "Aurora Editor 1.0.dmg"
         
       - name: Upload a Build Artifact
         id: upload_artifact
@@ -135,7 +238,7 @@ jobs:
 
       - name: Create a Updated nightly.json File
         run: |
-          version_name=${{ steps.version_and_sha.outputs.version_name }}
+          version_name=${{ steps.version_info.outputs.version_name }}
           version_code=${{ steps.version_and_sha.outputs.version_code }}
           sha256sum=${{ steps.version_and_sha.outputs.sha256sum }}
           file_size_bytes=${{ steps.calculate_size.outputs.file_size_bytes }}
